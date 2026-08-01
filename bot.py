@@ -182,7 +182,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/addmember @handle team1|team2 — add/move a member (or reply to their message with "
         "/addmember team1|team2)\n"
         "/removemember @handle — remove a member\n"
-        "/listmembers — list all members and their teams\n\n"
+        "/listmembers — list all members and their teams\n"
+        "/cleardata — wipe all outings & points history (keeps members/settings), asks to confirm\n\n"
         "_Logging outings (admins only, in the group):_\n"
         "/logouting <description> — start the guided flow to log who attended\n\n"
         "_Logging your own outing (DM me directly):_\n"
@@ -296,6 +297,38 @@ async def listmembers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines.append("  (none)")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /cleardata (admin-only, with confirmation)
+# ---------------------------------------------------------------------------
+
+async def cleardata_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, context):
+        await update.message.reply_text("Only group admins can do this.")
+        return
+    await update.message.reply_text(
+        "⚠️ This will wipe all outings and points history for *everyone* "
+        "(members and the group settings stay intact). This can't be undone. "
+        "Are you sure?",
+        parse_mode="Markdown",
+        reply_markup=build_yes_no_keyboard("cleardata"),
+    )
+
+
+async def cleardata_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not await is_group_admin(update, context):
+        await query.edit_message_text("Only group admins can do this.")
+        return
+
+    if query.data == "cleardata:yes":
+        db.clear_points_data()
+        await query.edit_message_text("✅ Cleared. All outings and points are back to 0.")
+    else:
+        await query.edit_message_text("Cancelled — nothing was cleared.")
 
 
 # ---------------------------------------------------------------------------
@@ -875,6 +908,8 @@ def main():
     application.add_handler(CommandHandler("removemember", removemember_cmd))
     application.add_handler(CommandHandler("listmembers", listmembers_cmd))
     application.add_handler(CommandHandler("points", points_cmd))
+    application.add_handler(CommandHandler("cleardata", cleardata_cmd))
+    application.add_handler(CallbackQueryHandler(cleardata_confirm, pattern=r"^cleardata:"))
 
     # Outing logging conversation
     conv = ConversationHandler(

@@ -220,6 +220,16 @@ def list_outings(limit: int = 10) -> list[sqlite3.Row]:
         return cur.fetchall()
 
 
+def clear_points_data():
+    """Wipes outings/points history (and any dangling pending shares), but
+    keeps members, pending_members, and settings (e.g. group_chat_id) intact."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM points_log")
+        conn.execute("DELETE FROM outings")
+        conn.execute("DELETE FROM pending_shares")
+        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('outings', 'points_log')")
+
+
 def log_points(user_id: int, team: str, points: int, reason: str, outing_id: int | None):
     with get_conn() as conn:
         conn.execute(
