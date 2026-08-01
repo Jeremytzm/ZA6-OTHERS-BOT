@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+points_bot.db
+points_bot.db.bak.*
+.DS_Store
