@@ -39,9 +39,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _env_or_default(key: str, default: str) -> str:
+    """os.getenv's default only kicks in when the var is unset, not when a
+    hosting platform sets it to an empty string — treat blank the same as unset."""
+    value = os.getenv(key)
+    return value if value else default
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TIMEZONE = os.getenv("TIMEZONE", "Asia/Singapore")
-SUMMARY_HOUR = int(os.getenv("SUMMARY_HOUR", "18"))  # 24h, local to TIMEZONE
+TIMEZONE = _env_or_default("TIMEZONE", "Asia/Singapore")
+SUMMARY_HOUR = int(_env_or_default("SUMMARY_HOUR", "18"))  # 24h, local to TIMEZONE
 
 OUTING_POINTS = 3
 IMPACT_POINTS = 3
