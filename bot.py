@@ -53,6 +53,7 @@ SUMMARY_HOUR = int(_env_or_default("SUMMARY_HOUR", "18"))  # 24h, local to TIMEZ
 OUTING_POINTS = 3
 IMPACT_POINTS = 3
 SHARE_POINTS = 4
+NEW_GROUND_POINTS = 30
 
 (
     SELECT_ATTENDEES,
@@ -64,7 +65,10 @@ SHARE_POINTS = 4
     DM_AWAIT_STORY,
     DM_ASK_PHOTO,
     DM_AWAIT_PHOTO,
-) = range(9)
+    NG_AWAIT_DESCRIPTION,
+    NG_ASK_PHOTO,
+    NG_AWAIT_PHOTO,
+) = range(12)
 
 GROUP_CAPTION_LIMIT = 1024  # Telegram's hard limit on photo captions
 
@@ -123,6 +127,7 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("🛟Log an outing", callback_data="menu:log")],
+            [InlineKeyboardButton("Took new grounds ❤️‍🔥", callback_data="menu:newground")],
             [InlineKeyboardButton("📊 View points & outings", callback_data="menu:view")],
         ]
     )
@@ -194,6 +199,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Tap *📊 View points & outings* from the same menu to see team totals and recent outings. "
         "The ✅ Start button (below the message box) brings the menu back up anytime — even "
         "mid-way through logging an outing.\n\n"
+        "_Logging new ground taken (DM me directly):_\n"
+        "Tap *Took new grounds ❤️‍🔥* from the /start menu, tell us about it, optionally attach a "
+        f"photo, and earn +{NEW_GROUND_POINTS} pts posted straight to the group.\n\n"
         "_Everyone:_\n"
         "/points — show current team point totals\n"
         "/help — show this message"
@@ -766,17 +774,23 @@ def build_dm_outing_header(
     grand_total = points_earned + OUTING_POINTS * len(teammate_names)
     lines.append(f"(Total earned this outing: {grand_total} pts)")
 
+    lines.append("")
+    lines.extend(team_totals_lines())
+
+    return "\n".join(lines), points_earned
+
+
+def team_totals_lines() -> list[str]:
     totals = db.team_totals()
     t1, t2 = totals["team1"], totals["team2"]
     t1_disp, t2_disp = db.team_display_name("team1"), db.team_display_name("team2")
-    lines.append(f"\n📊 {t1_disp}: {t1} pts | {t2_disp}: {t2} pts")
+    lines = [f"📊 {t1_disp}: {t1} pts | {t2_disp}: {t2} pts"]
     if t1 != t2:
         leader_disp = t1_disp if t1 > t2 else t2_disp
         lines.append(f"🏆 {leader_disp} is currently in the lead!")
     else:
         lines.append("🤝 It's currently tied!")
-
-    return "\n".join(lines), points_earned
+    return lines
 
 
 async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -843,6 +857,118 @@ async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await context.bot.send_message(
         chat_id=user.id,
         text=f"✅ Logged! You earned {points_earned} pts for {team_disp}.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# "Took new grounds" via DM: a member reports new ground taken for a flat
+# NEW_GROUND_POINTS reward, with an optional photo — no teammates/impact step.
+# ---------------------------------------------------------------------------
+
+async def newground_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    member = db.get_member(user.id)
+    if not member:
+        await query.edit_message_text(
+            "You're not registered as a member yet — ask a group admin to add you with "
+            "/addmember first, then try again."
+        )
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    await query.edit_message_text("Let's goooo 🔥 Tell us more about the grounds that you took!")
+    return NG_AWAIT_DESCRIPTION
+
+
+async def ng_description_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if message.text == START_BUTTON_TEXT:
+        return await restart_button_handler(update, context)
+    if message.photo:
+        await message.reply_text(
+            "Let's get it in words first — send it as a text message, and I'll ask for a photo "
+            "separately right after."
+        )
+        return NG_AWAIT_DESCRIPTION
+
+    context.user_data["ng_description"] = message.text.strip() or "New ground"
+    await message.reply_text(
+        "Got it! Want to attach a photo too?",
+        reply_markup=build_yes_no_keyboard("ngphoto"),
+    )
+    return NG_ASK_PHOTO
+
+
+async def ng_photo_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "ngphoto:no":
+        await query.edit_message_text("Processing...")
+        await finalize_new_ground(update, context)
+        return ConversationHandler.END
+
+    await query.edit_message_text("Feel free to send me the photo 😁")
+    return NG_AWAIT_PHOTO
+
+
+async def ng_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    context.user_data["ng_photo"] = message.photo[-1].file_id
+    await message.reply_text("Got it! Logging it now...")
+    await finalize_new_ground(update, context)
+    return ConversationHandler.END
+
+
+def build_new_ground_header(name: str, team_disp: str, description: str) -> str:
+    lines = [
+        f"🔥 {name} took new ground: \"{description}\" and earned +{NEW_GROUND_POINTS} pts for {team_disp}!",
+        f"(Total earned: {NEW_GROUND_POINTS} pts)",
+        "",
+    ]
+    lines.extend(team_totals_lines())
+    return "\n".join(lines)
+
+
+async def finalize_new_ground(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    member = db.get_member(user.id)
+
+    description = context.user_data.pop("ng_description", "New ground")
+    photo_file_id = context.user_data.pop("ng_photo", None)
+    context.user_data.clear()
+
+    if not member:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="Hmm, I couldn't find your membership record. Please ask an admin to add you.",
+        )
+        return
+
+    team = member["team"]
+    team_disp = db.team_display_name(team)
+    name = member["display_name"]
+
+    outing_id = db.create_outing(f"🔥 New ground: {description}")
+    db.log_points(user.id, team, NEW_GROUND_POINTS, "new_ground", outing_id)
+
+    header = build_new_ground_header(name, team_disp, description)
+
+    group_chat_id = db.get_setting("group_chat_id")
+    if group_chat_id:
+        chat_id = int(group_chat_id)
+        if photo_file_id:
+            caption = header if len(header) <= GROUP_CAPTION_LIMIT else header[: GROUP_CAPTION_LIMIT - 1] + "…"
+            await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=header)
+
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=f"✅ Logged! You earned {NEW_GROUND_POINTS} pts for {team_disp}.",
     )
 
 
@@ -942,6 +1068,7 @@ def main():
         entry_points=[
             CommandHandler("logouting", logouting_dm_start, filters=filters.ChatType.PRIVATE),
             CallbackQueryHandler(logouting_menu_start, pattern=r"^menu:log$"),
+            CallbackQueryHandler(newground_menu_start, pattern=r"^menu:newground$"),
             restart_handler,
         ],
         states={
@@ -956,6 +1083,11 @@ def main():
             ],
             DM_ASK_PHOTO: [CallbackQueryHandler(dm_photo_answer, pattern=r"^dmphoto:")],
             DM_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, dm_photo_message)],
+            NG_AWAIT_DESCRIPTION: [
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), ng_description_message)
+            ],
+            NG_ASK_PHOTO: [CallbackQueryHandler(ng_photo_answer, pattern=r"^ngphoto:")],
+            NG_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, ng_photo_message)],
         },
         fallbacks=[CommandHandler("cancel", logouting_cancel), restart_handler],
     )
