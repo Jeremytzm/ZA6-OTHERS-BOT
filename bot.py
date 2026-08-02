@@ -883,7 +883,7 @@ async def newground_menu_start(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     context.user_data.clear()
-    await query.edit_message_text("Let's goooo 🔥 Tell us more about the grounds that you took!")
+    await query.edit_message_text("Let's goooo 🔥 What grounds did you take?")
     return NG_AWAIT_DESCRIPTION
 
 
@@ -899,7 +899,7 @@ async def ng_description_message(update: Update, context: ContextTypes.DEFAULT_T
         return NG_AWAIT_DESCRIPTION
 
     context.user_data["ng_description"] = message.text.strip() or "New grounds"
-    await message.reply_text("Now tell us more about it — what happened, who was there, how did it go? 👀")
+    await message.reply_text("Now tell us more about it — how did it go?")
     return NG_AWAIT_STORY
 
 
