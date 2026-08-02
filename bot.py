@@ -66,9 +66,10 @@ NEW_GROUND_POINTS = 30
     DM_ASK_PHOTO,
     DM_AWAIT_PHOTO,
     NG_AWAIT_DESCRIPTION,
+    NG_AWAIT_STORY,
     NG_ASK_PHOTO,
     NG_AWAIT_PHOTO,
-) = range(12)
+) = range(13)
 
 GROUP_CAPTION_LIMIT = 1024  # Telegram's hard limit on photo captions
 
@@ -199,9 +200,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Tap *📊 View points & outings* from the same menu to see team totals and recent outings. "
         "The ✅ Start button (below the message box) brings the menu back up anytime — even "
         "mid-way through logging an outing.\n\n"
-        "_Logging new ground taken (DM me directly):_\n"
-        "Tap *Took new grounds ❤️‍🔥* from the /start menu, tell us about it, optionally attach a "
-        f"photo, and earn +{NEW_GROUND_POINTS} pts posted straight to the group.\n\n"
+        "_Logging new grounds taken (DM me directly):_\n"
+        "Tap *Took new grounds ❤️‍🔥* from the /start menu, tell us about it, share a bit more "
+        f"detail, optionally attach a photo, and earn +{NEW_GROUND_POINTS} pts posted straight "
+        "to the group.\n\n"
         "_Everyone:_\n"
         "/points — show current team point totals\n"
         "/help — show this message"
@@ -861,8 +863,10 @@ async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ---------------------------------------------------------------------------
-# "Took new grounds" via DM: a member reports new ground taken for a flat
-# NEW_GROUND_POINTS reward, with an optional photo — no teammates/impact step.
+# "Took new grounds" via DM: a member reports new grounds taken for a flat
+# NEW_GROUND_POINTS reward — description, then a fuller story, then an
+# optional photo (mirrors the self-report outing flow, minus the
+# teammates/impact steps, which don't apply here).
 # ---------------------------------------------------------------------------
 
 async def newground_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -889,12 +893,28 @@ async def ng_description_message(update: Update, context: ContextTypes.DEFAULT_T
         return await restart_button_handler(update, context)
     if message.photo:
         await message.reply_text(
-            "Let's get it in words first — send it as a text message, and I'll ask for a photo "
-            "separately right after."
+            "Let's get it in words first — send it as a text message, and I'll ask for more "
+            "detail (and a photo) separately right after."
         )
         return NG_AWAIT_DESCRIPTION
 
-    context.user_data["ng_description"] = message.text.strip() or "New ground"
+    context.user_data["ng_description"] = message.text.strip() or "New grounds"
+    await message.reply_text("Now tell us more about it — what happened, who was there, how did it go? 👀")
+    return NG_AWAIT_STORY
+
+
+async def ng_story_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if message.text == START_BUTTON_TEXT:
+        return await restart_button_handler(update, context)
+    if message.photo:
+        await message.reply_text(
+            "Let's get the story in words first — send it as a text message, and I'll ask "
+            "for a photo separately right after."
+        )
+        return NG_AWAIT_STORY
+
+    context.user_data["ng_story"] = message.text
     await message.reply_text(
         "Got it! Want to attach a photo too?",
         reply_markup=build_yes_no_keyboard("ngphoto"),
@@ -925,7 +945,7 @@ async def ng_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def build_new_ground_header(name: str, team_disp: str, description: str) -> str:
     lines = [
-        f"🔥 {name} took new ground: \"{description}\" and earned +{NEW_GROUND_POINTS} pts for {team_disp}!",
+        f"🔥 {name} took new grounds: \"{description}\" and earned +{NEW_GROUND_POINTS} pts for {team_disp}!",
         f"(Total earned: {NEW_GROUND_POINTS} pts)",
         "",
     ]
@@ -937,7 +957,8 @@ async def finalize_new_ground(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     member = db.get_member(user.id)
 
-    description = context.user_data.pop("ng_description", "New ground")
+    description = context.user_data.pop("ng_description", "New grounds")
+    story_text = context.user_data.pop("ng_story", "")
     photo_file_id = context.user_data.pop("ng_photo", None)
     context.user_data.clear()
 
@@ -952,19 +973,24 @@ async def finalize_new_ground(update: Update, context: ContextTypes.DEFAULT_TYPE
     team_disp = db.team_display_name(team)
     name = member["display_name"]
 
-    outing_id = db.create_outing(f"🔥 New ground: {description}")
+    outing_id = db.create_outing(f"🔥 New grounds: {description}")
     db.log_points(user.id, team, NEW_GROUND_POINTS, "new_ground", outing_id)
 
     header = build_new_ground_header(name, team_disp, description)
+    full_text = f"{header}\n\n{story_text}" if story_text else header
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            caption = header if len(header) <= GROUP_CAPTION_LIMIT else header[: GROUP_CAPTION_LIMIT - 1] + "…"
+            prefix = f"{header}\n\n"
+            available = GROUP_CAPTION_LIMIT - len(prefix)
+            # Telegram caps photo captions at 1024 chars — trim the story to fit.
+            story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
+            caption = f"{prefix}{story_for_caption}"
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
-            await context.bot.send_message(chat_id=chat_id, text=header)
+            await context.bot.send_message(chat_id=chat_id, text=full_text)
 
     await context.bot.send_message(
         chat_id=user.id,
@@ -1085,6 +1111,9 @@ def main():
             DM_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, dm_photo_message)],
             NG_AWAIT_DESCRIPTION: [
                 MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), ng_description_message)
+            ],
+            NG_AWAIT_STORY: [
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), ng_story_message)
             ],
             NG_ASK_PHOTO: [CallbackQueryHandler(ng_photo_answer, pattern=r"^ngphoto:")],
             NG_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, ng_photo_message)],
