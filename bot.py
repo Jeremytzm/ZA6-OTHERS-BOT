@@ -559,10 +559,13 @@ def build_yes_no_keyboard(prefix: str) -> InlineKeyboardMarkup:
 def build_teammates_keyboard(members, self_id: int, team: str, selected: set) -> InlineKeyboardMarkup:
     rows = []
     for m in members:
-        if m["user_id"] == self_id or m["team"] != team:
+        if m["user_id"] == self_id:
             continue
         mark = "✅" if m["user_id"] in selected else "⬜"
-        rows.append([InlineKeyboardButton(f"{mark} {m['display_name']}", callback_data=f"dmteam:{m['user_id']}")])
+        label = m["display_name"]
+        if m["team"] != team:
+            label += f" ({db.team_display_name(m['team'])})"
+        rows.append([InlineKeyboardButton(f"{mark} {label}", callback_data=f"dmteam:{m['user_id']}")])
     rows.append([InlineKeyboardButton("▶️ Done", callback_data="dmteam:done")])
     return InlineKeyboardMarkup(rows)
 
@@ -575,8 +578,8 @@ async def send_teammates_prompt(message, description: str, context: ContextTypes
     member = db.get_member(user.id)
     members = db.get_all_members()
     await message.reply_text(
-        "Let's goooo 🔥 Select the teammates that joined, then tap Done (just tap Done if it "
-        "was just you).",
+        "Let's goooo 🔥 Select anyone else who joined (from either team), then tap Done (just tap "
+        "Done if it was just you).",
         reply_markup=build_teammates_keyboard(members, user.id, member["team"], set()),
     )
     return DM_SELECT_TEAMMATES
@@ -717,7 +720,7 @@ async def dm_photo_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await finalize_dm_outing(update, context)
         return ConversationHandler.END
 
-    await query.edit_message_text("Send me the photo now.")
+    await query.edit_message_text("Feel free to send me the photo 😁")
     return DM_AWAIT_PHOTO
 
 
@@ -749,7 +752,7 @@ def build_dm_outing_header(
     if teammate_names:
         company_bonus = OUTING_POINTS * len(teammate_names)
         points_earned += company_bonus
-        lines.append(f"👥 Also joined from {team_disp}: {', '.join(teammate_names)} (+{OUTING_POINTS} pts each)")
+        lines.append(f"👥 Also joined: {', '.join(teammate_names)} (+{OUTING_POINTS} pts each)")
 
     if had_impact:
         points_earned += IMPACT_POINTS
@@ -811,7 +814,10 @@ async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if teammate_members:
         company_bonus = OUTING_POINTS * len(teammate_members)
         db.log_points(user.id, team, company_bonus, "outing_company_bonus", outing_id)
-    teammate_names = [m["display_name"] for m in teammate_members]
+    teammate_names = [
+        m["display_name"] if m["team"] == team else f"{m['display_name']} ({db.team_display_name(m['team'])})"
+        for m in teammate_members
+    ]
 
     header, points_earned = build_dm_outing_header(
         name, team_disp, description, had_impact, story_text is not None, teammate_names
