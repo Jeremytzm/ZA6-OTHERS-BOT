@@ -54,6 +54,7 @@ OUTING_POINTS = 3
 IMPACT_POINTS = 3
 SHARE_POINTS = 4
 NEW_GROUND_POINTS = 30
+IMPACT_LOG_POINTS = 5  # flat reward for a standalone Impact log (no description step)
 
 (
     SELECT_ATTENDEES,
@@ -66,8 +67,6 @@ NEW_GROUND_POINTS = 30
     DM_AWAIT_STORY,
     DM_ASK_PHOTO,
     DM_AWAIT_PHOTO,
-    IMPACT_AWAIT_DESCRIPTION,
-    IMPACT_ASK_SHARE,
     IMPACT_AWAIT_STORY,
     IMPACT_ASK_PHOTO,
     IMPACT_AWAIT_PHOTO,
@@ -75,7 +74,7 @@ NEW_GROUND_POINTS = 30
     NG_AWAIT_STORY,
     NG_ASK_PHOTO,
     NG_AWAIT_PHOTO,
-) = range(19)
+) = range(17)
 
 GROUP_CAPTION_LIMIT = 1024  # Telegram's hard limit on photo captions
 
@@ -204,11 +203,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "earn points too), whether it had a spiritual/significant impact, then give you the "
         "option to share a short story and a photo (as separate steps), and post it all to the "
         "group with everyone's points earned.\n"
-        f"  • *Impact* (or /logimpact <description>) — for when you made an impact (e.g. "
-        f"loving/praying for someone) without a full outing. Describe it for +{IMPACT_POINTS} "
-        f"pts, then optionally share more about it and attach a photo for +{SHARE_POINTS} more "
-        f"pts (up to {IMPACT_POINTS + SHARE_POINTS} pts total). No teammates can be added to an "
-        "impact.\n\n"
+        f"  • *Impact* (or /logimpact) — for when you made an impact (e.g. loving/praying for "
+        f"someone) without a full outing. Share a bit about it, optionally attach a photo, and "
+        f"earn a flat +{IMPACT_LOG_POINTS} pts. No teammates can be added to an impact.\n\n"
         "Tap *📊 View points & outings* from the same menu to see team totals and recent outings. "
         "The ✅ Start button (below the message box) brings the menu back up anytime — even "
         "mid-way through logging an outing.\n\n"
@@ -659,8 +656,8 @@ async def log_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Tell us more about it\nI.E Dinner with Kesle 👀")
         return DM_ASK_DESCRIPTION
 
-    await query.edit_message_text("Tell us about the impact you made\nI.E Prayed for Kesle 🙏")
-    return IMPACT_AWAIT_DESCRIPTION
+    await query.edit_message_text("Share more about the impact you made ❤️‍🔥")
+    return IMPACT_AWAIT_STORY
 
 
 async def dm_description_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -900,20 +897,9 @@ async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ---------------------------------------------------------------------------
 # Impact logging via DM: a member reports an impact made without a full
-# outing (e.g. loving/praying for someone) — description, then an optional
-# story and photo. No teammates can be credited on an impact.
+# outing (e.g. loving/praying for someone) — a flat-points share, plus an
+# optional photo. No teammates can be credited on an impact.
 # ---------------------------------------------------------------------------
-
-async def send_impact_share_prompt(message, description: str, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
-    context.user_data["impact_desc"] = description
-    await message.reply_text(
-        f"Got it! Want to share more about the impact you made? You'll earn +{SHARE_POINTS} "
-        "bonus pts if you do!",
-        reply_markup=build_yes_no_keyboard("impshare"),
-    )
-    return IMPACT_ASK_SHARE
-
 
 async def logimpact_dm_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -925,27 +911,8 @@ async def logimpact_dm_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return ConversationHandler.END
 
-    description = " ".join(context.args) if context.args else "Impact"
-    return await send_impact_share_prompt(update.message, description, context)
-
-
-async def impact_description_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == START_BUTTON_TEXT:
-        return await restart_button_handler(update, context)
-    description = update.message.text.strip() or "Impact"
-    return await send_impact_share_prompt(update.message, description, context)
-
-
-async def impact_share_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "impshare:no":
-        await query.edit_message_text("Processing...")
-        await finalize_impact(update, context)
-        return ConversationHandler.END
-
-    await query.edit_message_text("Share more about the impact you made!")
+    context.user_data.clear()
+    await update.message.reply_text("Share more about the impact you made ❤️‍🔥")
     return IMPACT_AWAIT_STORY
 
 
@@ -962,7 +929,7 @@ async def impact_story_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     context.user_data["impact_story"] = message.text
     await message.reply_text(
-        "Got it! Want to attach a photo too?",
+        "LETS GOO!! Would you like to send in a photo too?",
         reply_markup=build_yes_no_keyboard("impphoto"),
     )
     return IMPACT_ASK_PHOTO
@@ -989,27 +956,21 @@ async def impact_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 
-def build_impact_header(name: str, team_disp: str, description: str, shared: bool) -> tuple[str, int]:
-    lines = [f"❤️ {name} made an impact: \"{description}\" and earned +{IMPACT_POINTS} pts for {team_disp}!"]
-    points_earned = IMPACT_POINTS
-
-    if shared:
-        points_earned += SHARE_POINTS
-        lines.append(f"💬 They shared more about it — +{SHARE_POINTS} more pts!")
-
-    lines.append(f"(Total earned: {points_earned} pts)")
-    lines.append("")
+def build_impact_header(name: str, team_disp: str) -> str:
+    lines = [
+        f"❤️ {name} made an impact and earned +{IMPACT_LOG_POINTS} pts for {team_disp}!",
+        f"(Total earned: {IMPACT_LOG_POINTS} pts)",
+        "",
+    ]
     lines.extend(team_totals_lines())
-
-    return "\n".join(lines), points_earned
+    return "\n".join(lines)
 
 
 async def finalize_impact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     member = db.get_member(user.id)
 
-    description = context.user_data.pop("impact_desc", "Impact")
-    story_text = context.user_data.pop("impact_story", None)
+    story_text = context.user_data.pop("impact_story", "")
     photo_file_id = context.user_data.pop("impact_photo", None)
     context.user_data.clear()
 
@@ -1024,33 +985,28 @@ async def finalize_impact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     team_disp = db.team_display_name(team)
     name = member["display_name"]
 
-    outing_id = db.create_outing(f"❤️ Impact: {description}")
-    db.log_points(user.id, team, IMPACT_POINTS, "impact_made", outing_id)
-    if story_text is not None:
-        db.log_points(user.id, team, SHARE_POINTS, "impact_shared_reflection", outing_id)
+    outing_id = db.create_outing("❤️ Impact")
+    db.log_points(user.id, team, IMPACT_LOG_POINTS, "impact_made", outing_id)
 
-    header, points_earned = build_impact_header(name, team_disp, description, story_text is not None)
+    header = build_impact_header(name, team_disp)
     full_text = f"{header}\n\n{story_text}" if story_text else header
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            if story_text:
-                prefix = f"{header}\n\n"
-                available = GROUP_CAPTION_LIMIT - len(prefix)
-                # Telegram caps photo captions at 1024 chars — trim the story to fit.
-                story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
-                caption = f"{prefix}{story_for_caption}"
-            else:
-                caption = header
+            prefix = f"{header}\n\n"
+            available = GROUP_CAPTION_LIMIT - len(prefix)
+            # Telegram caps photo captions at 1024 chars — trim the story to fit.
+            story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
+            caption = f"{prefix}{story_for_caption}"
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
             await context.bot.send_message(chat_id=chat_id, text=full_text)
 
     await context.bot.send_message(
         chat_id=user.id,
-        text=f"✅ Logged! You earned {points_earned} pts for {team_disp}.",
+        text=f"✅ Logged! You earned {IMPACT_LOG_POINTS} pts for {team_disp}.",
     )
 
 
@@ -1303,10 +1259,6 @@ def main():
             ],
             DM_ASK_PHOTO: [CallbackQueryHandler(dm_photo_answer, pattern=r"^dmphoto:")],
             DM_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, dm_photo_message)],
-            IMPACT_AWAIT_DESCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, impact_description_message)
-            ],
-            IMPACT_ASK_SHARE: [CallbackQueryHandler(impact_share_answer, pattern=r"^impshare:")],
             IMPACT_AWAIT_STORY: [
                 MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), impact_story_message)
             ],
