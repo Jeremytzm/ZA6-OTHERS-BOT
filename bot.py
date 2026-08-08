@@ -58,6 +58,7 @@ NEW_GROUND_POINTS = 30
 (
     SELECT_ATTENDEES,
     SELECT_IMPACT,
+    LOG_TYPE_CHOICE,
     DM_ASK_DESCRIPTION,
     DM_SELECT_TEAMMATES,
     DM_ASK_IMPACT,
@@ -65,11 +66,16 @@ NEW_GROUND_POINTS = 30
     DM_AWAIT_STORY,
     DM_ASK_PHOTO,
     DM_AWAIT_PHOTO,
+    IMPACT_AWAIT_DESCRIPTION,
+    IMPACT_ASK_SHARE,
+    IMPACT_AWAIT_STORY,
+    IMPACT_ASK_PHOTO,
+    IMPACT_AWAIT_PHOTO,
     NG_AWAIT_DESCRIPTION,
     NG_AWAIT_STORY,
     NG_ASK_PHOTO,
     NG_AWAIT_PHOTO,
-) = range(13)
+) = range(19)
 
 GROUP_CAPTION_LIMIT = 1024  # Telegram's hard limit on photo captions
 
@@ -127,7 +133,7 @@ START_BUTTON_TEXT = "✅ Start"
 def build_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("🛟Log an outing", callback_data="menu:log")],
+            [InlineKeyboardButton("🛟Log an outing/impact", callback_data="menu:log")],
             [InlineKeyboardButton("Took new grounds ❤️‍🔥", callback_data="menu:newground")],
             [InlineKeyboardButton("📊 View points & outings", callback_data="menu:view")],
         ]
@@ -192,11 +198,17 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cleardata — wipe all outings & points history (keeps members/settings), asks to confirm\n\n"
         "_Logging outings (admins only, in the group):_\n"
         "/logouting <description> — start the guided flow to log who attended\n\n"
-        "_Logging your own outing (DM me directly):_\n"
-        "Send /start and tap *🛟Log an outing*, or use /logouting <description>. I'll ask which "
-        "teammates joined you (they earn points too), whether it had a spiritual/significant "
-        "impact, then give you the option to share a short story and a photo (as separate steps), "
-        "and post it all to the group with everyone's points earned. "
+        "_Logging your own outing or impact (DM me directly):_\n"
+        "Send /start and tap *🛟Log an outing/impact* to choose between:\n"
+        "  • *Outing* (or /logouting <description>) — I'll ask which teammates joined you (they "
+        "earn points too), whether it had a spiritual/significant impact, then give you the "
+        "option to share a short story and a photo (as separate steps), and post it all to the "
+        "group with everyone's points earned.\n"
+        f"  • *Impact* (or /logimpact <description>) — for when you made an impact (e.g. "
+        f"loving/praying for someone) without a full outing. Describe it for +{IMPACT_POINTS} "
+        f"pts, then optionally share more about it and attach a photo for +{SHARE_POINTS} more "
+        f"pts (up to {IMPACT_POINTS + SHARE_POINTS} pts total). No teammates can be added to an "
+        "impact.\n\n"
         "Tap *📊 View points & outings* from the same menu to see team totals and recent outings. "
         "The ✅ Start button (below the message box) brings the menu back up anytime — even "
         "mid-way through logging an outing.\n\n"
@@ -560,6 +572,15 @@ def build_dm_impact_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def build_log_type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🛟 Outing", callback_data="logtype:outing")],
+            [InlineKeyboardButton("❤️ Impact", callback_data="logtype:impact")],
+        ]
+    )
+
+
 def build_yes_no_keyboard(prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("Yes", callback_data=f"{prefix}:yes"), InlineKeyboardButton("No thanks", callback_data=f"{prefix}:no")]]
@@ -623,8 +644,23 @@ async def logouting_menu_start(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     context.user_data.clear()
-    await query.edit_message_text("Tell us more about it\nI.E Dinner with Kesle 👀")
-    return DM_ASK_DESCRIPTION
+    await query.edit_message_text(
+        "What would you like to log?",
+        reply_markup=build_log_type_keyboard(),
+    )
+    return LOG_TYPE_CHOICE
+
+
+async def log_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "logtype:outing":
+        await query.edit_message_text("Tell us more about it\nI.E Dinner with Kesle 👀")
+        return DM_ASK_DESCRIPTION
+
+    await query.edit_message_text("Tell us about the impact you made\nI.E Prayed for Kesle 🙏")
+    return IMPACT_AWAIT_DESCRIPTION
 
 
 async def dm_description_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -846,6 +882,162 @@ async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if photo_file_id:
             if story_text:
                 prefix = f'{header}\n\n'
+                available = GROUP_CAPTION_LIMIT - len(prefix)
+                # Telegram caps photo captions at 1024 chars — trim the story to fit.
+                story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
+                caption = f"{prefix}{story_for_caption}"
+            else:
+                caption = header
+            await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=full_text)
+
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=f"✅ Logged! You earned {points_earned} pts for {team_disp}.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Impact logging via DM: a member reports an impact made without a full
+# outing (e.g. loving/praying for someone) — description, then an optional
+# story and photo. No teammates can be credited on an impact.
+# ---------------------------------------------------------------------------
+
+async def send_impact_share_prompt(message, description: str, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    context.user_data["impact_desc"] = description
+    await message.reply_text(
+        f"Got it! Want to share more about the impact you made? You'll earn +{SHARE_POINTS} "
+        "bonus pts if you do!",
+        reply_markup=build_yes_no_keyboard("impshare"),
+    )
+    return IMPACT_ASK_SHARE
+
+
+async def logimpact_dm_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    member = db.get_member(user.id)
+    if not member:
+        await update.message.reply_text(
+            "You're not registered as a member yet — ask a group admin to add you with "
+            "/addmember first, then try again."
+        )
+        return ConversationHandler.END
+
+    description = " ".join(context.args) if context.args else "Impact"
+    return await send_impact_share_prompt(update.message, description, context)
+
+
+async def impact_description_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == START_BUTTON_TEXT:
+        return await restart_button_handler(update, context)
+    description = update.message.text.strip() or "Impact"
+    return await send_impact_share_prompt(update.message, description, context)
+
+
+async def impact_share_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "impshare:no":
+        await query.edit_message_text("Processing...")
+        await finalize_impact(update, context)
+        return ConversationHandler.END
+
+    await query.edit_message_text("Share more about the impact you made!")
+    return IMPACT_AWAIT_STORY
+
+
+async def impact_story_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if message.text == START_BUTTON_TEXT:
+        return await restart_button_handler(update, context)
+    if message.photo:
+        await message.reply_text(
+            "Let's get the story in words first — send it as a text message, and I'll ask "
+            "for a photo separately right after."
+        )
+        return IMPACT_AWAIT_STORY
+
+    context.user_data["impact_story"] = message.text
+    await message.reply_text(
+        "Got it! Want to attach a photo too?",
+        reply_markup=build_yes_no_keyboard("impphoto"),
+    )
+    return IMPACT_ASK_PHOTO
+
+
+async def impact_photo_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "impphoto:no":
+        await query.edit_message_text("Processing...")
+        await finalize_impact(update, context)
+        return ConversationHandler.END
+
+    await query.edit_message_text("Feel free to send me the photo 😁")
+    return IMPACT_AWAIT_PHOTO
+
+
+async def impact_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    context.user_data["impact_photo"] = message.photo[-1].file_id
+    await message.reply_text("Got it! Logging your impact now...")
+    await finalize_impact(update, context)
+    return ConversationHandler.END
+
+
+def build_impact_header(name: str, team_disp: str, description: str, shared: bool) -> tuple[str, int]:
+    lines = [f"❤️ {name} made an impact: \"{description}\" and earned +{IMPACT_POINTS} pts for {team_disp}!"]
+    points_earned = IMPACT_POINTS
+
+    if shared:
+        points_earned += SHARE_POINTS
+        lines.append(f"💬 They shared more about it — +{SHARE_POINTS} more pts!")
+
+    lines.append(f"(Total earned: {points_earned} pts)")
+    lines.append("")
+    lines.extend(team_totals_lines())
+
+    return "\n".join(lines), points_earned
+
+
+async def finalize_impact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    member = db.get_member(user.id)
+
+    description = context.user_data.pop("impact_desc", "Impact")
+    story_text = context.user_data.pop("impact_story", None)
+    photo_file_id = context.user_data.pop("impact_photo", None)
+    context.user_data.clear()
+
+    if not member:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="Hmm, I couldn't find your membership record. Please ask an admin to add you.",
+        )
+        return
+
+    team = member["team"]
+    team_disp = db.team_display_name(team)
+    name = member["display_name"]
+
+    outing_id = db.create_outing(f"❤️ Impact: {description}")
+    db.log_points(user.id, team, IMPACT_POINTS, "impact_made", outing_id)
+    if story_text is not None:
+        db.log_points(user.id, team, SHARE_POINTS, "impact_shared_reflection", outing_id)
+
+    header, points_earned = build_impact_header(name, team_disp, description, story_text is not None)
+    full_text = f"{header}\n\n{story_text}" if story_text else header
+
+    group_chat_id = db.get_setting("group_chat_id")
+    if group_chat_id:
+        chat_id = int(group_chat_id)
+        if photo_file_id:
+            if story_text:
+                prefix = f"{header}\n\n"
                 available = GROUP_CAPTION_LIMIT - len(prefix)
                 # Telegram caps photo captions at 1024 chars — trim the story to fit.
                 story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
@@ -1093,11 +1285,13 @@ def main():
     dm_conv = ConversationHandler(
         entry_points=[
             CommandHandler("logouting", logouting_dm_start, filters=filters.ChatType.PRIVATE),
+            CommandHandler("logimpact", logimpact_dm_start, filters=filters.ChatType.PRIVATE),
             CallbackQueryHandler(logouting_menu_start, pattern=r"^menu:log$"),
             CallbackQueryHandler(newground_menu_start, pattern=r"^menu:newground$"),
             restart_handler,
         ],
         states={
+            LOG_TYPE_CHOICE: [CallbackQueryHandler(log_type_choice, pattern=r"^logtype:")],
             DM_ASK_DESCRIPTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, dm_description_message)
             ],
@@ -1109,6 +1303,15 @@ def main():
             ],
             DM_ASK_PHOTO: [CallbackQueryHandler(dm_photo_answer, pattern=r"^dmphoto:")],
             DM_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, dm_photo_message)],
+            IMPACT_AWAIT_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, impact_description_message)
+            ],
+            IMPACT_ASK_SHARE: [CallbackQueryHandler(impact_share_answer, pattern=r"^impshare:")],
+            IMPACT_AWAIT_STORY: [
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), impact_story_message)
+            ],
+            IMPACT_ASK_PHOTO: [CallbackQueryHandler(impact_photo_answer, pattern=r"^impphoto:")],
+            IMPACT_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, impact_photo_message)],
             NG_AWAIT_DESCRIPTION: [
                 MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), ng_description_message)
             ],
