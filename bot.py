@@ -53,8 +53,10 @@ SUMMARY_HOUR = int(_env_or_default("SUMMARY_HOUR", "18"))  # 24h, local to TIMEZ
 OUTING_POINTS = 3
 IMPACT_POINTS = 3
 SHARE_POINTS = 4
-NEW_GROUND_POINTS = 30
+NEW_GROUND_POINTS = 20
 IMPACT_LOG_POINTS = 5  # flat reward for a standalone Impact log (no description step)
+PRAYER_POINTS = 2  # flat reward for logging a prayer
+PRAYER_SHARE_POINTS = 3  # bonus for sharing what was prayed for / revelations
 
 (
     SELECT_ATTENDEES,
@@ -70,11 +72,15 @@ IMPACT_LOG_POINTS = 5  # flat reward for a standalone Impact log (no description
     IMPACT_AWAIT_STORY,
     IMPACT_ASK_PHOTO,
     IMPACT_AWAIT_PHOTO,
+    PRAYER_ASK_SHARE,
+    PRAYER_AWAIT_STORY,
+    PRAYER_ASK_PHOTO,
+    PRAYER_AWAIT_PHOTO,
     NG_AWAIT_DESCRIPTION,
     NG_AWAIT_STORY,
     NG_ASK_PHOTO,
     NG_AWAIT_PHOTO,
-) = range(17)
+) = range(21)
 
 GROUP_CAPTION_LIMIT = 1024  # Telegram's hard limit on photo captions
 
@@ -133,7 +139,8 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("🛟Log an outing/impact", callback_data="menu:log")],
-            [InlineKeyboardButton("Took new grounds ❤️‍🔥", callback_data="menu:newground")],
+            [InlineKeyboardButton("🙏🏻 Log a prayer", callback_data="menu:prayer")],
+            [InlineKeyboardButton("❤️‍🔥 Took new grounds", callback_data="menu:newground")],
             [InlineKeyboardButton("📊 View points & outings", callback_data="menu:view")],
         ]
     )
@@ -203,14 +210,18 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "earn points too), whether it had a spiritual/significant impact, then give you the "
         "option to share a short story and a photo (as separate steps), and post it all to the "
         "group with everyone's points earned.\n"
-        f"  • *Impact* (or /logimpact) — for when you made an impact (e.g. loving/praying for "
-        f"someone) without a full outing. Share a bit about it, optionally attach a photo, and "
-        f"earn a flat +{IMPACT_LOG_POINTS} pts. No teammates can be added to an impact.\n\n"
+        f"  • *Impact* (or /logimpact) — for when you made an impact on someone without a full "
+        f"outing. Share a bit about it, optionally attach a photo, and earn a flat "
+        f"+{IMPACT_LOG_POINTS} pts. No teammates can be added to an impact.\n\n"
+        "_Logging a prayer (DM me directly):_\n"
+        f"Tap *🙏🏻 Log a prayer* from the /start menu and earn +{PRAYER_POINTS} pts. You'll then "
+        f"have the option to share what you prayed for or any revelations (+{PRAYER_SHARE_POINTS} "
+        "bonus pts) and attach a photo.\n\n"
         "Tap *📊 View points & outings* from the same menu to see team totals and recent outings. "
         "The ✅ Start button (below the message box) brings the menu back up anytime — even "
-        "mid-way through logging an outing.\n\n"
+        "mid-way through logging something.\n\n"
         "_Logging new grounds taken (DM me directly):_\n"
-        "Tap *Took new grounds ❤️‍🔥* from the /start menu, tell us about it, share a bit more "
+        "Tap *❤️‍🔥 Took new grounds* from the /start menu, tell us about it, share a bit more "
         f"detail, optionally attach a photo, and earn +{NEW_GROUND_POINTS} pts posted straight "
         "to the group.\n\n"
         "_Everyone:_\n"
@@ -1020,6 +1031,138 @@ async def finalize_impact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# Prayer logging via DM: a member logs a prayer for a flat PRAYER_POINTS
+# reward, plus an optional bonus for sharing what they prayed for /
+# revelations they had, and an optional photo. No teammates or description.
+# ---------------------------------------------------------------------------
+
+async def prayer_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    member = db.get_member(user.id)
+    if not member:
+        await query.edit_message_text(
+            "You're not registered as a member yet — ask a group admin to add you with "
+            "/addmember first, then try again."
+        )
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    await query.edit_message_text(
+        "Prayed up 💪🏼\nWould you like to share what you prayed for or any revelations? "
+        f"You'll earn +{PRAYER_SHARE_POINTS} bonus pts if you do!",
+        reply_markup=build_yes_no_keyboard("prayshare"),
+    )
+    return PRAYER_ASK_SHARE
+
+
+async def prayer_share_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "prayshare:no":
+        await query.edit_message_text("Processing...")
+        await finalize_prayer(update, context)
+        return ConversationHandler.END
+
+    await query.edit_message_text("Share what you prayed for or any revelations!")
+    return PRAYER_AWAIT_STORY
+
+
+async def prayer_story_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if message.text == START_BUTTON_TEXT:
+        return await restart_button_handler(update, context)
+    if message.photo:
+        await message.reply_text(
+            "Let's get it in words first — send it as a text message, and I'll ask "
+            "for a photo separately right after."
+        )
+        return PRAYER_AWAIT_STORY
+
+    context.user_data["prayer_story"] = message.text
+    await message.reply_text(
+        "LETS GOO!! Would you like to send in a photo too?",
+        reply_markup=build_yes_no_keyboard("prayphoto"),
+    )
+    return PRAYER_ASK_PHOTO
+
+
+async def prayer_photo_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "prayphoto:no":
+        await query.edit_message_text("Processing...")
+        await finalize_prayer(update, context)
+        return ConversationHandler.END
+
+    await query.edit_message_text("Feel free to send me the photo 😁")
+    return PRAYER_AWAIT_PHOTO
+
+
+async def prayer_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    context.user_data["prayer_photo"] = message.photo[-1].file_id
+    await message.reply_text("Got it! Logging your prayer now...")
+    await finalize_prayer(update, context)
+    return ConversationHandler.END
+
+
+def build_prayer_header(name: str, shared: bool) -> tuple[str, int]:
+    points_earned = PRAYER_POINTS + (PRAYER_SHARE_POINTS if shared else 0)
+    lines = [
+        f"🙏🏻 {name} just prayed up!",
+        f"(Total earned: {points_earned} pts)",
+    ]
+    return "\n".join(lines), points_earned
+
+
+async def finalize_prayer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    member = db.get_member(user.id)
+
+    story_text = context.user_data.pop("prayer_story", None)
+    photo_file_id = context.user_data.pop("prayer_photo", None)
+    context.user_data.clear()
+
+    if not member:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="Hmm, I couldn't find your membership record. Please ask an admin to add you.",
+        )
+        return
+
+    team = member["team"]
+    team_disp = db.team_display_name(team)
+    name = member["display_name"]
+
+    outing_id = db.create_outing("🙏🏻 Prayed up")
+    db.log_points(user.id, team, PRAYER_POINTS, "prayer_logged", outing_id)
+    if story_text is not None:
+        db.log_points(user.id, team, PRAYER_SHARE_POINTS, "prayer_shared_reflection", outing_id)
+
+    header, points_earned = build_prayer_header(name, story_text is not None)
+    full_text = build_group_message(header, story_text)
+
+    group_chat_id = db.get_setting("group_chat_id")
+    if group_chat_id:
+        chat_id = int(group_chat_id)
+        if photo_file_id:
+            caption = build_group_caption(header, story_text)
+            await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=full_text)
+
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=f"✅ Logged! You earned {points_earned} pts for {team_disp}.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # "Took new grounds" via DM: a member reports new grounds taken for a flat
 # NEW_GROUND_POINTS reward — description, then a fuller story, then an
 # optional photo (mirrors the self-report outing flow, minus the
@@ -1246,6 +1389,7 @@ def main():
             CommandHandler("logouting", logouting_dm_start, filters=filters.ChatType.PRIVATE),
             CommandHandler("logimpact", logimpact_dm_start, filters=filters.ChatType.PRIVATE),
             CallbackQueryHandler(logouting_menu_start, pattern=r"^menu:log$"),
+            CallbackQueryHandler(prayer_menu_start, pattern=r"^menu:prayer$"),
             CallbackQueryHandler(newground_menu_start, pattern=r"^menu:newground$"),
             restart_handler,
         ],
@@ -1267,6 +1411,12 @@ def main():
             ],
             IMPACT_ASK_PHOTO: [CallbackQueryHandler(impact_photo_answer, pattern=r"^impphoto:")],
             IMPACT_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, impact_photo_message)],
+            PRAYER_ASK_SHARE: [CallbackQueryHandler(prayer_share_answer, pattern=r"^prayshare:")],
+            PRAYER_AWAIT_STORY: [
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), prayer_story_message)
+            ],
+            PRAYER_ASK_PHOTO: [CallbackQueryHandler(prayer_photo_answer, pattern=r"^prayphoto:")],
+            PRAYER_AWAIT_PHOTO: [MessageHandler(filters.PHOTO, prayer_photo_message)],
             NG_AWAIT_DESCRIPTION: [
                 MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), ng_description_message)
             ],
