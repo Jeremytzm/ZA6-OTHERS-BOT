@@ -828,6 +828,20 @@ def team_totals_lines() -> list[str]:
     return lines
 
 
+def build_story_first_text(header: str, story_text: str | None) -> str:
+    """Group announcements lead with the story, points/team totals follow."""
+    return f"{story_text}\n\n{header}" if story_text else header
+
+
+def build_story_first_caption(header: str, story_text: str) -> str:
+    """Same as build_story_first_text, but trims the story (not the header) to
+    fit Telegram's 1024-char photo caption cap."""
+    suffix = f"\n\n{header}"
+    available = GROUP_CAPTION_LIMIT - len(suffix)
+    story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
+    return f"{story_for_caption}{suffix}"
+
+
 async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     member = db.get_member(user.id)
@@ -871,20 +885,13 @@ async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE)
     header, points_earned = build_dm_outing_header(
         name, team_disp, description, had_impact, story_text is not None, teammate_names
     )
-    full_text = f'{header}\n\n{story_text}' if story_text else header
+    full_text = build_story_first_text(header, story_text)
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            if story_text:
-                prefix = f'{header}\n\n'
-                available = GROUP_CAPTION_LIMIT - len(prefix)
-                # Telegram caps photo captions at 1024 chars — trim the story to fit.
-                story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
-                caption = f"{prefix}{story_for_caption}"
-            else:
-                caption = header
+            caption = build_story_first_caption(header, story_text) if story_text else header
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
             await context.bot.send_message(chat_id=chat_id, text=full_text)
@@ -989,17 +996,13 @@ async def finalize_impact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.log_points(user.id, team, IMPACT_LOG_POINTS, "impact_made", outing_id)
 
     header = build_impact_header(name, team_disp)
-    full_text = f"{header}\n\n{story_text}" if story_text else header
+    full_text = build_story_first_text(header, story_text)
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            prefix = f"{header}\n\n"
-            available = GROUP_CAPTION_LIMIT - len(prefix)
-            # Telegram caps photo captions at 1024 chars — trim the story to fit.
-            story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
-            caption = f"{prefix}{story_for_caption}"
+            caption = build_story_first_caption(header, story_text) if story_text else header
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
             await context.bot.send_message(chat_id=chat_id, text=full_text)
@@ -1125,17 +1128,13 @@ async def finalize_new_ground(update: Update, context: ContextTypes.DEFAULT_TYPE
     db.log_points(user.id, team, NEW_GROUND_POINTS, "new_ground", outing_id)
 
     header = build_new_ground_header(name, team_disp, description)
-    full_text = f"{header}\n\n{story_text}" if story_text else header
+    full_text = build_story_first_text(header, story_text)
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            prefix = f"{header}\n\n"
-            available = GROUP_CAPTION_LIMIT - len(prefix)
-            # Telegram caps photo captions at 1024 chars — trim the story to fit.
-            story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
-            caption = f"{prefix}{story_for_caption}"
+            caption = build_story_first_caption(header, story_text) if story_text else header
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
             await context.bot.send_message(chat_id=chat_id, text=full_text)
