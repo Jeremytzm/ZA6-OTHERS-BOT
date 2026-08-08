@@ -783,8 +783,9 @@ def build_dm_outing_header(
     shared: bool,
     teammate_names: list[str],
 ) -> tuple[str, int]:
-    """Builds the announcement text *excluding* the story quote, so callers can
-    fit the quote into a length budget (e.g. Telegram's 1024-char photo caption cap).
+    """Builds the announcement text *excluding* the story and team totals, so
+    callers can slot the story between the two (and fit it into a length
+    budget, e.g. Telegram's 1024-char photo caption cap).
 
     The reporter earns OUTING_POINTS for themselves, plus another OUTING_POINTS
     for each teammate who joined them (a "company bonus"); each teammate also
@@ -809,9 +810,6 @@ def build_dm_outing_header(
     grand_total = points_earned + OUTING_POINTS * len(teammate_names)
     lines.append(f"(Total earned this outing: {grand_total} pts)")
 
-    lines.append("")
-    lines.extend(team_totals_lines())
-
     return "\n".join(lines), points_earned
 
 
@@ -828,18 +826,28 @@ def team_totals_lines() -> list[str]:
     return lines
 
 
-def build_story_first_text(header: str, story_text: str | None) -> str:
-    """Group announcements lead with the story, points/team totals follow."""
-    return f"{story_text}\n\n{header}" if story_text else header
+def build_group_message(header: str, story_text: str | None) -> str:
+    """Group announcements read: header (points earned), then the shared
+    story, then team totals."""
+    totals = "\n".join(team_totals_lines())
+    parts = [header]
+    if story_text:
+        parts.append(story_text)
+    parts.append(totals)
+    return "\n\n".join(parts)
 
 
-def build_story_first_caption(header: str, story_text: str) -> str:
-    """Same as build_story_first_text, but trims the story (not the header) to
-    fit Telegram's 1024-char photo caption cap."""
-    suffix = f"\n\n{header}"
-    available = GROUP_CAPTION_LIMIT - len(suffix)
+def build_group_caption(header: str, story_text: str | None) -> str:
+    """Same layout as build_group_message, but trims the story (not the
+    header or team totals) to fit Telegram's 1024-char photo caption cap."""
+    totals = "\n".join(team_totals_lines())
+    if not story_text:
+        return f"{header}\n\n{totals}"
+    prefix = f"{header}\n\n"
+    suffix = f"\n\n{totals}"
+    available = GROUP_CAPTION_LIMIT - len(prefix) - len(suffix)
     story_for_caption = story_text if len(story_text) <= available else story_text[: max(0, available - 1)] + "…"
-    return f"{story_for_caption}{suffix}"
+    return f"{prefix}{story_for_caption}{suffix}"
 
 
 async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -885,13 +893,13 @@ async def finalize_dm_outing(update: Update, context: ContextTypes.DEFAULT_TYPE)
     header, points_earned = build_dm_outing_header(
         name, team_disp, description, had_impact, story_text is not None, teammate_names
     )
-    full_text = build_story_first_text(header, story_text)
+    full_text = build_group_message(header, story_text)
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            caption = build_story_first_caption(header, story_text) if story_text else header
+            caption = build_group_caption(header, story_text)
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
             await context.bot.send_message(chat_id=chat_id, text=full_text)
@@ -967,9 +975,7 @@ def build_impact_header(name: str, team_disp: str) -> str:
     lines = [
         f"❤️ {name} made an impact and earned +{IMPACT_LOG_POINTS} pts for {team_disp}!",
         f"(Total earned: {IMPACT_LOG_POINTS} pts)",
-        "",
     ]
-    lines.extend(team_totals_lines())
     return "\n".join(lines)
 
 
@@ -996,13 +1002,13 @@ async def finalize_impact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.log_points(user.id, team, IMPACT_LOG_POINTS, "impact_made", outing_id)
 
     header = build_impact_header(name, team_disp)
-    full_text = build_story_first_text(header, story_text)
+    full_text = build_group_message(header, story_text)
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            caption = build_story_first_caption(header, story_text) if story_text else header
+            caption = build_group_caption(header, story_text)
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
             await context.bot.send_message(chat_id=chat_id, text=full_text)
@@ -1098,9 +1104,7 @@ def build_new_ground_header(name: str, team_disp: str, description: str) -> str:
     lines = [
         f"🔥 {name} took new grounds: \"{description}\" and earned +{NEW_GROUND_POINTS} pts for {team_disp}!",
         f"(Total earned: {NEW_GROUND_POINTS} pts)",
-        "",
     ]
-    lines.extend(team_totals_lines())
     return "\n".join(lines)
 
 
@@ -1128,13 +1132,13 @@ async def finalize_new_ground(update: Update, context: ContextTypes.DEFAULT_TYPE
     db.log_points(user.id, team, NEW_GROUND_POINTS, "new_ground", outing_id)
 
     header = build_new_ground_header(name, team_disp, description)
-    full_text = build_story_first_text(header, story_text)
+    full_text = build_group_message(header, story_text)
 
     group_chat_id = db.get_setting("group_chat_id")
     if group_chat_id:
         chat_id = int(group_chat_id)
         if photo_file_id:
-            caption = build_story_first_caption(header, story_text) if story_text else header
+            caption = build_group_caption(header, story_text)
             await context.bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
         else:
             await context.bot.send_message(chat_id=chat_id, text=full_text)
